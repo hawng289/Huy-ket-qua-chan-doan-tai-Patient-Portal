@@ -1,5 +1,6 @@
 package vn.com.itechcorp.module.report.job;
 
+import feign.Response;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -11,8 +12,12 @@ import vn.com.itechcorp.his.dto.HisRequest;
 import vn.com.itechcorp.his.dto.HisResponse;
 import vn.com.itechcorp.his.service.HisService;
 import vn.com.itechcorp.module.hl7.service.ReportHl7Service;
+import vn.com.itechcorp.module.local.entity.PatientPortalReport;
+import vn.com.itechcorp.module.local.entity.PatientPortalReportStatus;
+import vn.com.itechcorp.module.local.service.PatientPortalReportService;
 import vn.com.itechcorp.module.notification.service.PushNotificationService;
 import vn.com.itechcorp.module.notification.service.dto.NotificationDTOCreate;
+import vn.com.itechcorp.module.portal.service.PatientPortalService;
 import vn.com.itechcorp.module.report.constants.ReportType;
 import vn.com.itechcorp.module.report.service.FileSignedService;
 import vn.com.itechcorp.module.report.service.ReportSentService;
@@ -33,6 +38,7 @@ import vn.com.itechcorp.util.FolderNameFactory;
 import vn.com.itechcorp.util.JsonUtils;
 import vn.com.itechcorp.util.TextUtil;
 
+import java.time.LocalDate;
 import java.util.Date;
 import java.util.List;
 
@@ -72,6 +78,10 @@ public class ReportSender {
 
     @Value("${notification.enabled:false}")
     private boolean enableNotificationMobile;
+    @Autowired
+    private PatientPortalService patientPortalService;
+    @Autowired
+    PatientPortalReportService patientPortalReportService;
 
     @Scheduled(fixedDelayString = "${time.delay.send.retry:60000}")
     public void getReport() {
@@ -186,6 +196,24 @@ public class ReportSender {
 
             RisResponse risResponse = risService.updateHisReportStatus(report.getOrderNumber(), report.getProcedureCode(), object);
             logger.info("[AccNo-{}]ReportID-{} Update his status report to PACS - {}",report.getAccessionNumber(),report.getId(),risResponse);
+            if (fileSigned == null) {
+                PatientPortalReport patientPortalReport = patientPortalReportService.findByAccessionNumberAndProcedureCode(report.getAccessionNumber(), report.getProcedureCode());
+                patientPortalReport.setVoidedTime((LocalDate.now()).toString());
+                if (patientPortalReport.getStatus() == PatientPortalReportStatus.PENDING) {
+                    patientPortalReport.setVoided(true);
+                } else if (patientPortalReport.getStatus() == PatientPortalReportStatus.SUCCEED) {
+                    Long id = patientPortalReport.getReportId();
+                    logger.info("Send request delete report[ID-{}] patientportal", id);
+                    Response partientPortalResponse = patientPortalService.deleteByReportId(id);
+                    patientPortalReport.setStatus(PatientPortalReportStatus.DELETED);
+                    patientPortalReport.setResponse(partientPortalResponse.body().toString());
+                    if (partientPortalResponse.status() == 200) {
+                        logger.info("Delete report[ID-{}] patientportal", id);
+                    } else {
+                        logger.info("Cannot delete report[ID-{}] patientportal", id);
+                    }
+                }
+            }
 
             // Send notification to mobile app
             if (enableNotificationMobile) {
